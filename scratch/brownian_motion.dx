@@ -1,0 +1,26 @@
+
+import plot
+
+UnitInterval = Float
+
+def bmIter ((key, y, sigma, t):(Key & Float & Float & UnitInterval)) :
+                               (Key & Float & Float & UnitInterval) =
+  [kDraw, kL, kR] = splitKey key
+  t' = abs (t - 0.5)  -- triangle, from 0.5 down to 0 back to 0.5
+  y' = sigma * randn kDraw * (0.5 - t')  -- (0.5-t') is a triangle, from 0 to 0.5 back to 0
+	-- So we take this triangle, and scale it by sigma. 
+  key' = select (t > 0.5) kL kR
+	-- We transform t', by splitting the zone in half recurisvely, and adding random triangles?
+	-- And then keys on the right or left get consistent keys. But because they inherit from parent, each of the 2^N partitions now have a different key.
+  (key', y + y', sigma / sqrt 2.0, t' * 2.0)
+  -- So what does this do? I guess it picks a point in the midpoint of two existing points, ensures it's distributed with brownian distribution, then linearly interpolates to fill in gaps?
+
+def sampleBM (key:Key) (t:UnitInterval) : Float =
+  (_, y, _, _) = fold (key, 0.0, 1.0, t) \i:(Fin 5). bmIter
+  y
+
+xs = linspace (Fin 200) 0.0 1.0
+ys = map (sampleBM (newKey 0)) xs
+
+:html showPlot $ xyPlot xs ys
+> <html output>

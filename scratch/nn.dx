@@ -1,0 +1,474 @@
+' # Neural Networks
+
+import plot
+
+' ## NN Prelude
+
+
+def relu (input : Float) : Float =
+  select (input > 0.0) input 0.0
+
+' Question: Why do we need this add instance? Why do we need to add pairs? Are we doing some kind of recurisve thing?
+
+instance [Add a, Add b] Add (a & b)
+  add = \(a, b) (c, d). ( (a + c), (b + d))
+  sub = \(a, b) (c, d). ( (a - c), (b - d))
+  zero = (zero, zero)
+
+instance [VSpace a, VSpace b] VSpace (a & b)
+  scaleVec = \ s (a, b) . (scaleVec s a, scaleVec s b)
+
+data Layer inp:Type out:Type params:Type =
+  AsLayer {forward:(params -> inp -> out) & init:(Key -> params)}
+  
+
+def forward (l:Layer i o p) (p : p) (x : i): o =
+  (AsLayer l' ) = l
+  (getAt #forward l') p x
+
+def init (l:Layer i o p) (k:Key)  : p  =
+  (AsLayer l') = l
+  (getAt #init l') k
+
+
+' ## Layers 
+
+' Dense layer
+
+def DenseParams (a:Type) (b:Type) : Type =
+   ((a=>b=>Float) & (b=>Float))
+
+def dense (a:Type) (b:Type) : Layer (a=>Float) (b=>Float) (DenseParams a b) =
+  AsLayer {
+    forward = (\ ((weight, bias)) x .
+               for j. (bias.j + sum for i. weight.i.j * x.i)),
+    init = arb
+   }
+  
+
+' CNN layer
+
+def CNNParams (inc:Type) (outc:Type) (kw:Int) (kh:Int) : Type =
+  ((outc=>inc=>Fin kh=>Fin kw=>Float) &
+   (outc=>Float))
+
+def conv2d (x:inc=>(Fin h)=>(Fin w)=>Float)
+           (kernel:outc=>inc=>(Fin kh)=>(Fin kw)=>Float) :
+     outc=>(Fin h)=>(Fin w)=>Float =
+     for o i j.
+         (i', j') = (ordinal i, ordinal j)
+         case (i' + kh) <= h && (j' + kw) <= w of
+          True ->
+              sum for (ki, kj, inp).
+                  (di, dj) = (fromOrdinal (Fin h) (i' + (ordinal ki)),
+                              fromOrdinal (Fin w) (j' + (ordinal kj)))
+                  x.inp.di.dj * kernel.o.inp.ki.kj
+          False -> zero
+
+def cnn (h:Int) ?-> (w:Int) ?-> (inc:Type) (outc:Type) (kw:Int) (kh:Int) :
+    Layer (inc=>(Fin h)=>(Fin w)=>Float)
+          (outc=>(Fin h)=>(Fin w)=>Float)
+          (CNNParams inc outc kw kh) =
+  AsLayer {
+    forward = (\ (weight, bias) x. for o i j . (conv2d x weight).o.i.j + bias.o),
+    init = arb
+  }
+
+' Pooling
+
+def split (x: m=>v) : n=>o=>v =
+    for i j. x.((ordinal (i,j))@m)
+
+def imtile (x: a=>b=>v) : n=>o=>p=>q=>v =
+    for kw kh w h. (split (split x).w.kw).h.kh
+
+def meanpool (kh: Type) (kw: Type) (x : m=>n=> Float) : ( h=>w=> Float) =
+    out : (kh => kw => h => w => Float) = imtile x
+    mean for (i,j). out.i.j
+
+' ## Defining objective function
+
+def objective (x: Float32) (y: Float32) : Float32 =
+    sqrt (x*x + y*y)
+
+:t objective
+
+objective 1.0 2.0
+
+span = linspace (Fin 30) (-1.0) (1.0)
+span
+:t span
+
+-- vals = for i:Height. for j:Width. objective (IToF (ordinal i)) (IToF (ordinal j))
+
+vals = for i j. objective span.i span.j
+
+:html matshow vals
+
+' Paramters of a diagonal multivariate normal distribution, representing current policy.
+
+policy_mean = (1.0, 1.0)
+policy_stddev = (1.0, 1.0)
+
+log 1.0
+sin 1.0
+cos 1.0
+
+rand_key = newKey 0
+[rand_key_a, rand_key_b] = splitKey rand_key
+
+a = rand rand_key_a
+b = rand rand_key_b
+a
+b
+
+' Convert uniform to normal with Box-Muller transform:
+' https://www.baeldung.com/cs/uniform-to-normal-distribution
+
+def uniform_to_normal (a: Float32) (b: Float32): Float32 =
+  sqrt(-2.0 * log(a)) * cos (2.0 * pi * b)
+
+uniform_to_normal a b
+
+:t cos
+:t log
+
+def uniform_to_normals (a: Float32) (b: Float32): (Float32 & Float32) =
+  norm = sqrt(-2.0 * log(a))
+  angle = 2.0 * pi * b
+  (norm * cos(angle), norm * sin(angle))
+
+uniform_to_normals a b
+
+[test1, test2] = splitKey (newKey 0)
+
+def random_normals (k: Key): (Key & (Float32 & Float32)) =
+  [k_next, k1, k2] = splitKey k
+  a = rand k1
+  b = rand k2
+  (k_next, uniform_to_normals a b)
+
+-- this is actually already implemented in prelude as randn
+
+def random_normal (k: Key): (Key & Float32) =
+  (k_next, a, b) = random_normals k
+  (k_next, a)
+  -- TODO: make more efficient use of samples
+
+def sample_diag_gaussian (k: Key) (means: Fin a => Float32) (std_devs: Fin a => Float32): Fin a => Float32 =
+  keys = splitKey k
+  for i. std_devs.i * (randn keys.i) + means.i
+
+sample_diag_gaussian (newKey 0) [0.0, 100.0] [1.0, 1.0]
+
+sample_diag_gaussian (newKey 0) [0.0, 100.0, 0.0] [1.0, 1.0, 20.0]
+
+epochs = Fin 10
+
+init_mean = [1.0, 0.5]
+init_stdev = [1.0, 1.0]
+
+:t init_mean
+:t init_stdev
+
+withState init_mean $ \mean.
+  for j: (Fin 5).
+    mean := for i.
+      (get mean).i + IToF (ordinal i) + IToF (ordinal j)
+    (get mean)
+
+interface LinearMap m s t
+  apply : m -> s=>Float -> t=>Float
+  compose : m -> m -> m
+  determinant : m -> Float
+  trace : m -> Float
+  inverse : m -> m
+  standardBasisMatrix : m -> s=>t=>Float
+
+-- Diagonal matrices
+instance LinearMap (Fin d=>Float) (Fin d) (Fin d)
+  apply = \diag vector. for i. vector.i * diag.i
+  compose = \diag1 diag2. for i. diag1.i * diag2.i
+  determinant = \diag. prod diag
+  trace = \diag. sum diag
+  inverse = \diag. for i. 1.0/diag.i
+  standardBasisMatrix = \diag. for i j.
+    if i == j
+      then 1.0
+      else 0.0
+
+def gauss_analytic_kl [LinearMap m s t] (mean_0: s=>Float) (cov_0: m) (mean_1: s=>Float) (cov_1: m): Float =
+  determinant cov_0
+  -- log_cov_term = log ((determinant cov_1) / (determinant cov_0))
+  -- mean_diff = for i. mean_1.i - mean_0.i
+  -- mean_term = sum for i. (apply (inverse cov_0) mean_diff).i * mean_diff.i
+  -- cov_term = trace (compose (inverse cov_1) cov_0)
+  -- dimension = sum (sum (for i j. (standardBasisMatrix cov_0).i.j))
+  -- 0.5*(log_cov_term + mean_term + cov_term - dimension)
+  -- 0.5
+
+:t gauss_analytic_kl
+
+def gauss_pdf [LinearMap m s t] (mean: s => Float) (cov: m) (point: s => Float): Float =
+  dim = sum (sum (for i j. (standardBasisMatrix cov).i.j))
+  normalization_term = pow (2.0*pi) (-dim/2.0)
+  determinant_term = 1.0 / sqrt (determinant cov)
+  diff_from_mean = for i. mean.i - point.i
+  density_term = exp (-0.5 * sum for i. (apply (inverse cov) diff_from_mean).i * diff_from_mean.i)
+  normalization_term * determinant_term * density_term
+
+'
+instance LinearMap (Fin d=>Fin d=>Float) (Fin d) (Fin d)
+  apply = \matrix vector. for j. sum for i. vector.i * matrix.i.j
+  determinant = \
+
+-- https://mr-easy.github.io/2020-04-16-kl-divergence-between-2-gaussian-distributions/
+def diag_gauss_kl (mean_p: Fin d => Float32) (stdev_p: Fin d => Float32) (mean_q: Fin d => Float32) (stdev_q: Fin d => Float32): Float32 =
+  log_stdev_term = log ((prod stdev_q)/(prod stdev_p))
+  stdev_q_inverse = for i. 1.0 / stdev_q.i  -- Diagonal
+  mean_term = sum (for i. ((mean_p.i - mean_q.i) * stdev_q_inverse.i * (mean_p.i - mean_q.i)))
+  stdev_term = sum (for i. stdev_p.i / stdev_q.i)
+  0.5*(log_stdev_term - IToF (ordinal d) + mean_term + stdev_term)
+
+:t diag_gauss_kl
+
+' Question: Do we actually need the normalization terms? We just care about relative values anyway, could we remove assumption Fin d?
+
+def diag_gauss_pdf (mean: Fin d => Float32) (stdev: Fin d => Float32) (point: Fin d => Float32): Float32 =
+  dim = IToF d
+  normalization_term = pow (2.0*pi) (-dim/2.0)
+  determinant_term = 1.0 / (sqrt (prod stdev))
+  density_term = exp (-0.5 * sum (for i. (point.i - mean.i) * (1.0/stdev.i) * (point.i - mean.i)))
+  normalization_term * determinant_term * density_term
+
+--Problem: computing density needs a concept of vector/matrix multiplication.
+--So we need a vector space with covariance matrices and multiplication.
+--diag_gauss_pdf_vspace (mean: VSpace) (stdev: VSpace) (point: VSpace): VSpace:
+--  density_term = exp (-0.5 *
+
+:t diag_gauss_pdf
+
+-- diag_gauss_pdf [0.0, 0.0] [1.0, 1.0] [0.0, 1.0]
+
+diag_gauss_pdf [0.0] [1.0] [0.0]
+
+gauss_vals = for i j. diag_gauss_pdf [0.0, 0.0] [0.25, 0.25] [span.i, span.j]
+
+:html matshow gauss_vals
+
+gauss_span = linspace (Fin 100) (-1.0) (1.0)
+
+gauss_anim = withState [-0.5, 1.0] $ \mean. withState [0.5, 0.5] $ \stdev.
+  for t: (Fin 20).
+    cur_gauss_vals = for i j.
+      density = diag_gauss_pdf (get mean) (get stdev) [gauss_span.i, gauss_span.j]
+      [density, density, density]
+    (loss, gradfn) = vjp (\ (mean, stdev). diag_gauss_kl mean stdev [0.0, 0.0] [0.25, 0.25]) (get mean, get stdev)
+    (gmean, gstdev) = gradfn 1.0
+    -- TODO: do this with vector space operations, without loops
+    mean := for i. (get mean).i - (0.05) * gmean.i
+    stdev := for i. (get stdev).i - (0.05) * gstdev.i
+    cur_gauss_vals
+
+:t gauss_anim
+
+:html imseqshow gauss_anim
+
+-- TODO: find value
+EPSILON = 0.05
+
+def estep (temperature: Float32) (q_values: Fin n_action_samples => Float32) : (Float32 & (Fin n_action_samples => Float32)) =
+  -- TODO: project temperature to ensure positivity
+  temperature_nograd = temperature -- TODO: how to stop gradient?
+  -- TODO: is subtracting q_logsumexp_c actually necessary? don't we just normalize immediately?
+  weights = for i. exp (q_values.i / temperature_nograd)
+  norm_weights = for i. weights.i / sum weights
+
+  -- TODO: do we have logsumexp for numerical stability?
+  q_logsumexp = log (sum (for i. exp (q_values.i / temperature)))
+  -- Check that this is equivalent; why wasn't it written this way originally?
+  -- Intution: temperature is always positive; so keep q_logsumexp close to -EPSILON+log(n_action_samples).
+  loss_temperature = temperature * (EPSILON - log (IToF n_action_samples) + q_logsumexp)
+  --loss_temperature = mean (temperature * EPSILON) + mean(temperature * (q_logsumexp - log(ItoF n_action_samples)))
+
+  (loss_temperature, norm_weights)
+
+
+-- TODO: define distribution object, which has sample(n) and pdf(point) methods
+-- def mstep(action_mean, action_stdev, actions, norm_weights)
+
+:t estep
+
+-- diag_gauss_pdf [0.0, 0.0] [1.0, 1.0] [0.0, 0.0]
+
+-- params =
+
+--for _ : epochs.
+--	loss = 
+  
+
+' ## Simple point classifier
+
+[k1, k2] = splitKey $ newKey 1
+x1 : Fin 100 => Float = arb k1
+x2 : Fin 100 => Float = arb k2
+y = for i. case ((x1.i > 0.0) && (x2.i > 0.0)) || ((x1.i < 0.0) && (x2.i < 0.0)) of
+  True -> 1
+  False -> 0
+xs = for i. [x1.i, x2.i]
+
+
+:html showPlot $ xycPlot x1 x2 $ for i. IToF y.i
+
+simple = \h1.
+  ndense1 = dense (Fin 2) h1
+  ndense2 = dense h1 (Fin 2)
+  AsLayer {
+    forward = (\ (dense1, dense2) x.
+         x1' = forward ndense1 dense1 x
+         x1 = for i. relu x1'.i
+         logsoftmax $ forward ndense2 dense2 x1),
+    init = (\key.
+         [k1, k2] = splitKey key
+         (init ndense1 k1, init ndense2 k2))
+  }
+
+:t simple
+
+' Train a multiclass classifier with minibatch SGD
+' `minibatch * minibatches = batch`
+
+def trainClass [VSpace p] (model: Layer a (b=>Float) p)
+                           (x: batch=>a)
+                           (y: batch=>b)
+                           (epochs : Type)
+                           (minibatch : Type)
+                           (minibatches : Type) :
+    (epochs => p & epochs => Float ) =
+  xs : minibatches => minibatch => a = split x
+  ys : minibatches => minibatch => b = split y
+  unzip $ withState (init model $ newKey 0) $ \params .
+     for _ : epochs.
+       loss = sum $ for b : minibatches. 
+              (loss, gradfn) =  vjp (\ params.
+                            -sum for j.
+                                       result = forward model params xs.b.j
+                                       result.(ys.b.j)) (get params)
+              gparams = gradfn 1.0
+              params := (get params) - scaleVec (0.05 / (IToF 100)) gparams
+              loss
+       (get params, loss)
+
+-- todo : Do I have to give minibatches as a param?
+simple_model = simple (Fin 10)
+(all_params,losses) = trainClass simple_model xs (for i. (y.i @ (Fin 2))) (Fin 500) (Fin 100) (Fin 1)
+
+span = linspace (Fin 10) (-1.0) (1.0)
+tests = for h : (Fin 50). for i . for j.
+        r = forward simple_model all_params.((ordinal h * 10)@_) [span.i, span.j]
+        [exp r.(1@_), exp r.(0@_), 0.0]
+        
+
+:t tests
+
+:html imseqshow tests
+
+' ## LeNet for image classification
+
+H = 28
+W = 28
+Image = Fin 1 => Fin H => Fin W => Float 
+Class = Fin 10
+
+lenet = \h1 h2 h3 .
+  ncnn1 = cnn (Fin 1) h1 3 3
+  ncnn2 = cnn h1 h2 3 3
+  Pooled = (h2 & Fin 7 & Fin 7)
+  ndense1 = dense Pooled h3
+  ndense2 = dense h3 Class
+  AsLayer {
+    forward = (\ (cnn1, cnn2, dense1, dense2) inp.
+         x:Image = inp
+         x1' = forward ncnn1 cnn1 x
+         x1 = for i j k. relu x1'.i.j.k
+         x2' = forward ncnn2 cnn2 x1
+         x2 = for i j k. relu x2'.i.j.k
+         x3 : (h2 => Fin 7 => Fin 7 => Float) = for c. meanpool (Fin 4) (Fin 4) x2.c
+         x4' = forward ndense1 dense1 for (i,j,k). x3.i.j.k     
+         x4 = for i. relu x4'.i
+         logsoftmax $ forward ndense2 dense2 x4),
+    init = (\key.
+         [k1, k2, k3, k4] = splitKey key
+         (init ncnn1 k1, init ncnn2 k2,
+         init ndense1 k3, init ndense2 k4))
+  }
+
+:t lenet
+
+
+' ## Data Loading
+
+
+
+
+
+Batch = Fin 5000
+Full = Fin ((size Batch) * H * W)
+
+def pixel (x:Char) : Float32 =
+     r = W8ToI x
+     IToF case r < 0 of
+             True -> (abs r) + 128
+             False -> r
+
+def getIm : Batch => Image = 
+    (AsList _ im) = unsafeIO do readFile "examples/mnist.bin"
+    raw = unsafeCastTable Full im
+    for b: Batch  c: (Fin 1) i:(Fin W) j:(Fin H).
+        pixel raw.((ordinal (b, i, j)) @ Full)
+
+def getLabel : Batch => Class =
+    (AsList _ im2) = unsafeIO do readFile "examples/labels.bin"
+    r = unsafeCastTable Batch im2
+    for i. (W8ToI r.i @ Class)
+
+
+' ## Training loop
+
+
+' Get binary files from:
+
+' `wget https://github.com/srush/learns-dex/raw/main/mnist.bin`
+
+' `wget https://github.com/srush/learns-dex/raw/main/labels.bin`
+
+' Comment out these lines
+
+-- ims = getIm
+-- labels = getLabel
+
+small_ims = for i: (Fin 10). ims.((ordinal i)@_)
+small_labels = for i: (Fin 10). labels.((ordinal i)@_)
+
+:p small_labels
+
+Epochs = (Fin 5)
+Minibatches = (Fin 1)
+Minibatch = (Fin 10)
+
+:t ims.(2@_)
+
+model = lenet (Fin 1) (Fin 1) (Fin 20) 
+init_param = (init model  $ newKey 0)
+:p forward model init_param (ims.(2@Batch))
+
+' Sanity check
+
+:t (grad ((\x param. sum (forward model param x)) (ims.(2@_)))) init_param
+
+(all_params', losses') = trainClass model small_ims small_labels Epochs Minibatch Minibatches
+
+:p losses'
+
+
+
